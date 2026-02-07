@@ -773,7 +773,7 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
       probe: snapshot.probe,
       lastProbeAt: snapshot.lastProbeAt ?? null,
     }),
-    probeAccount: async ({ timeoutMs: _timeoutMs, account }) => {
+    probeAccount: async ({ timeoutMs, account }) => {
       if (!account.configured || !account.jid || !account.password || !account.server) {
         return {
           ok: false,
@@ -782,21 +782,18 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
         };
       }
 
-      // Check existing client state instead of creating a new probe connection
-      // (creating a second connection causes stream-management conflicts in xmpp.js)
       const accountId = normalizeAccountId(account.accountId) || DEFAULT_ACCOUNT_ID;
       const existingClient = clients.get(accountId);
 
-      if (existingClient?.isConnected()) {
+      if (!existingClient) {
         return {
-          ok: true,
-          connectedJid: existingClient.getJid(),
+          ok: false,
+          error: "Channel not started",
           elapsedMs: 0,
         };
       }
 
-      if (existingClient) {
-        // Client exists but not connected (starting up or disconnected)
+      if (!existingClient.isConnected()) {
         return {
           ok: false,
           error: "Client exists but not connected",
@@ -804,11 +801,23 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
         };
       }
 
-      // No client running - report not started (don't create probe connection)
+      // Active probe: send XEP-0199 ping to verify connection is actually alive
+      const start = Date.now();
+      const pingOk = await existingClient.ping(timeoutMs ?? 5000);
+      const elapsedMs = Date.now() - start;
+
+      if (pingOk) {
+        return {
+          ok: true,
+          connectedJid: existingClient.getJid(),
+          elapsedMs,
+        };
+      }
+
       return {
         ok: false,
-        error: "Channel not started",
-        elapsedMs: 0,
+        error: "Connection dead (ping failed)",
+        elapsedMs,
       };
     },
     buildAccountSnapshot: ({ account, runtime, probe }) => ({

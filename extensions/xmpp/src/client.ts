@@ -789,6 +789,67 @@ export class XmppClient {
   getJid(): string {
     return this.currentJid || this.config.jid;
   }
+
+  /**
+   * XEP-0198: Stream Management ping - verify connection is alive
+   * Sends <r/> request and waits for <a/> acknowledgment
+   * Falls back to XEP-0199 ping if stream management is not enabled
+   * Returns true if ping succeeds, false if connection is dead
+   */
+  async ping(timeoutMs: number = 5000): Promise<boolean> {
+    if (!this.connected) {
+      return false;
+    }
+
+    try {
+      // Check if stream management is enabled
+      const sm = (this.xmpp as { streamManagement?: { enabled?: boolean } }).streamManagement;
+      if (sm?.enabled) {
+        // XEP-0198: Send <r/> and wait for <a/> response
+        const NS = "urn:xmpp:sm:3";
+        const ackPromise = new Promise<void>((resolve) => {
+          const onStanza = (stanza: XMLElement) => {
+            if (stanza.is("a", NS)) {
+              this.xmpp.removeListener("stanza", onStanza);
+              resolve();
+            }
+          };
+          this.xmpp.on("stanza", onStanza);
+          // Clean up listener on timeout
+          setTimeout(() => this.xmpp.removeListener("stanza", onStanza), timeoutMs);
+        });
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("SM ack timeout")), timeoutMs),
+        );
+
+        // Send <r/> request
+        await this.xmpp.send(xml("r", { xmlns: NS }));
+        await Promise.race([ackPromise, timeoutPromise]);
+        return true;
+      }
+
+      // Fallback to XEP-0199 ping if SM not enabled
+      const domain = this.config.jid.split("@")[1];
+      const iq = xml(
+        "iq",
+        { type: "get", to: domain, id: `ping-${Date.now()}` },
+        xml("ping", { xmlns: "urn:xmpp:ping" }),
+      );
+
+      const pingPromise = this.xmpp.iqCaller.request(iq);
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Ping timeout")), timeoutMs),
+      );
+
+      await Promise.race([pingPromise, timeoutPromise]);
+      return true;
+    } catch (error) {
+      // Ping failed - connection is likely dead
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      console.log(`[XMPP] Ping failed: ${errorMsg}`);
+      return false;
+    }
+  }
 }
 
 export function getBareJid(jid: string): string {

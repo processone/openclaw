@@ -86,6 +86,15 @@ export class XmppClient {
       resource: config.resource || "openclaw",
     });
 
+    // Configure stream management for faster dead connection detection
+    const sm = (
+      this.xmpp as { streamManagement?: { timeout?: number; requestAckInterval?: number } }
+    ).streamManagement;
+    if (sm) {
+      sm.timeout = 15_000; // 15s timeout (default 60s)
+      sm.requestAckInterval = 10_000; // Request ack every 10s (default 30s)
+    }
+
     this.setupEventHandlers();
   }
 
@@ -113,6 +122,19 @@ export class XmppClient {
         listener();
       }
     });
+
+    // Listen for auto-reconnect events
+    const reconnect = (
+      this.xmpp as { reconnect?: { on: (event: string, handler: () => void) => void } }
+    ).reconnect;
+    if (reconnect) {
+      reconnect.on("reconnecting", () => {
+        console.log(`[XMPP] Reconnecting to ${this.config.jid}...`);
+      });
+      reconnect.on("reconnected", () => {
+        console.log(`[XMPP] Reconnected to ${this.config.jid}`);
+      });
+    }
 
     // xmpp.js uses "stanza" event for all incoming stanzas
     this.xmpp.on("stanza", (stanza) => {
